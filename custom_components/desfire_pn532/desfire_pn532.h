@@ -6,6 +6,7 @@
 #include "mbedtls/aes.h"
 #include <string>
 #include <vector>
+#include <functional>
 
 namespace esphome {
 namespace desfire_pn532 {
@@ -53,6 +54,7 @@ class DesfirePN532 : public Component,
   void aes_decrypt(const uint8_t *key, const uint8_t *input, uint8_t *output);
 
   uint32_t last_check_ = 0;
+  std::string current_uid_;
 };
 
 class DesfireAuthenticatedTrigger : public Trigger<std::string> {
