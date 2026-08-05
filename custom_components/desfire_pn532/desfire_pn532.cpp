@@ -1,6 +1,7 @@
 #include "desfire_pn532.h"
 #include "esphome/core/log.h"
 #include "esphome/core/hal.h"
+#include "esphome/core/helpers.h"
 #include <vector>
 
 namespace esphome {
@@ -27,11 +28,9 @@ void DesfirePN532::loop() {
     this->last_check_ = now;
     if (this->detect_target()) {
       if (this->authenticate_desfire()) {
-        ESP_LOGI(TAG, "DESFire EV2 Authenticated Successfully!");
-        // We simulate extracting a user_id from the authenticated card.
-        // In a real scenario, this could be read from a protected file on the tag
-        // after authentication. For now, we publish a static "user_id" string.
-        std::string user_id = "lawrence";
+        ESP_LOGI(TAG, "DESFire EV2 Authenticated Successfully with UID: %s", this->current_uid_.c_str());
+        // Use the authenticated card's hardware UID as the user_id in the MQTT payload.
+        std::string user_id = this->current_uid_;
         for (auto &callback : this->on_authenticated_callbacks_) {
           callback(user_id);
         }
@@ -44,7 +43,7 @@ void DesfirePN532::dump_config() {
   ESP_LOGCONFIG(TAG, "Desfire PN532:");
   LOG_PIN("  CS Pin: ", this->cs_);
   LOG_PIN("  IRQ Pin: ", this->irq_pin_);
-  ESP_LOGCONFIG(TAG, "  NASC Key: %s", this->nasc_key_.c_str());
+  ESP_LOGCONFIG(TAG, "  NASC Key: <REDACTED>");
 }
 
 void DesfirePN532::add_on_authenticated_callback(std::function<void(std::string)> &&callback) {
@@ -58,6 +57,7 @@ bool DesfirePN532::is_ready() {
 
   // Fallback if IRQ is not configured (or not working): Read status byte over SPI
   this->enable();
+  this->write_byte(0x02); // SPI read status command
   uint8_t status = this->read_byte();
   this->disable();
   return (status == 0x01);
@@ -100,7 +100,7 @@ bool DesfirePN532::write_command(const std::vector<uint8_t> &command) {
   }
 
   this->enable();
-  this->write_byte(0x02); // SPI read command
+  this->write_byte(0x03); // SPI data read command
   std::vector<uint8_t> ack(6);
   for (int i = 0; i < 6; i++) {
     ack[i] = this->read_byte();
@@ -126,7 +126,7 @@ bool DesfirePN532::read_response(std::vector<uint8_t> &response, uint32_t timeou
   }
 
   this->enable();
-  this->write_byte(0x02); // SPI read
+  this->write_byte(0x03); // SPI data read command
 
   // Read preamble and sync
   uint8_t b;
@@ -202,7 +202,16 @@ bool DesfirePN532::detect_target() {
   if (!this->read_response(res, 200)) return false;
 
   if (res.size() > 7 && res[0] == 0xD5 && res[1] == 0x4B && res[2] > 0) {
-    return true;
+    uint8_t id_length = res[7];
+    if (res.size() >= (size_t)(8 + id_length)) {
+      char hex_str[3];
+      this->current_uid_ = "";
+      for (int i = 0; i < id_length; i++) {
+        snprintf(hex_str, sizeof(hex_str), "%02X", res[8 + i]);
+        this->current_uid_ += hex_str;
+      }
+      return true;
+    }
   }
   return false;
 }
@@ -251,14 +260,14 @@ bool DesfirePN532::authenticate_desfire() {
         return false;
     }
 
-    // Status byte should be 0xAF (Additional frame expected), plus 16 bytes of encrypted challenge
-    if (rx.size() != 17 || rx[0] != 0xAF) {
+    // In APDU wrapped mode, status is at the end: [16 bytes enc_rnd_b] 0x91 0xAF
+    if (rx.size() != 18 || rx[16] != 0x91 || rx[17] != 0xAF) {
         ESP_LOGE(TAG, "Invalid auth init response");
         return false;
     }
 
     uint8_t enc_rnd_b[16];
-    std::copy(rx.begin() + 1, rx.end(), enc_rnd_b);
+    std::copy(rx.begin(), rx.begin() + 16, enc_rnd_b);
 
     // Prepare Key
     uint8_t key[16] = {0};
@@ -312,12 +321,40 @@ bool DesfirePN532::authenticate_desfire() {
          return false;
     }
 
-    // Check response status (0x00 Success) and verify RndA' from card
-    if (rx.size() > 0 && rx[0] == 0x00) {
-        // Success
-        return true;
+    // Check response status. In APDU wrapped mode: [16 bytes enc_rnd_a_prime] 0x91 0x00
+    if (rx.size() == 18 && rx[16] == 0x91 && rx[17] == 0x00) {
+        // Decrypt the RndA' returned by the card using CBC
+        uint8_t enc_rnd_a_prime[16];
+        std::copy(rx.begin(), rx.begin() + 16, enc_rnd_a_prime);
+
+        uint8_t rnd_a_prime[16];
+        mbedtls_aes_context ctx_dec;
+        mbedtls_aes_init(&ctx_dec);
+        mbedtls_aes_setkey_dec(&ctx_dec, key, 128);
+
+        // The IV for this block is the last block of ciphertext we sent to the card.
+        // That is the second half of `enc_payload`, which starts at `enc_payload + 16`.
+        uint8_t iv_dec[16];
+        std::copy(enc_payload + 16, enc_payload + 32, iv_dec);
+
+        mbedtls_aes_crypt_cbc(&ctx_dec, MBEDTLS_AES_DECRYPT, 16, iv_dec, enc_rnd_a_prime, rnd_a_prime);
+        mbedtls_aes_free(&ctx_dec);
+
+        // Calculate expected RndA' (RndA rotated left by 1)
+        uint8_t expected_rnd_a_prime[16];
+        std::copy(rnd_a + 1, rnd_a + 16, expected_rnd_a_prime);
+        expected_rnd_a_prime[15] = rnd_a[0];
+
+        // Verify the cryptogram matches
+        if (memcmp(rnd_a_prime, expected_rnd_a_prime, 16) == 0) {
+            return true;
+        } else {
+            ESP_LOGE(TAG, "Cryptogram verification failed - possible rogue card!");
+            return false;
+        }
     }
 
+    ESP_LOGE(TAG, "Card failed to return valid authentication response");
     return false;
 }
 
