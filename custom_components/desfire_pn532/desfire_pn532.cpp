@@ -24,17 +24,32 @@ void DesfirePN532::setup() {
 
 void DesfirePN532::loop() {
   uint32_t now = millis();
-  if (now - this->last_check_ > 1000) {
+  // Poll faster (250ms) for a more responsive access control experience
+  if (now - this->last_check_ > 250) {
     this->last_check_ = now;
     if (this->detect_target()) {
-      if (this->authenticate_desfire()) {
-        ESP_LOGI(TAG, "DESFire EV2 Authenticated Successfully with UID: %s", this->current_uid_.c_str());
-        // Use the authenticated card's hardware UID as the user_id in the MQTT payload.
-        std::string user_id = this->current_uid_;
-        for (auto &callback : this->on_authenticated_callbacks_) {
-          callback(user_id);
+      // Debounce: Only process if it's a new tag, or if 5 seconds have passed
+      if (this->current_uid_ != this->last_uid_ || (now - this->last_uid_time_ > 5000)) {
+        this->last_uid_ = this->current_uid_;
+        this->last_uid_time_ = now;
+
+        if (this->authenticate_desfire()) {
+          ESP_LOGI(TAG, "DESFire EV2 Authenticated Successfully with UID: %s", this->current_uid_.c_str());
+          std::string user_id = this->current_uid_;
+          for (auto &callback : this->on_authenticated_callbacks_) {
+            callback(user_id);
+          }
+        } else {
+          ESP_LOGD(TAG, "Tag detected but authentication failed (or not a DESFire tag). UID: %s", this->current_uid_.c_str());
+          std::string user_id = this->current_uid_;
+          for (auto &callback : this->on_auth_failed_callbacks_) {
+            callback(user_id);
+          }
         }
       }
+    } else {
+      // Clear the last UID so it can be scanned again immediately if removed
+      this->last_uid_ = "";
     }
   }
 }
@@ -48,6 +63,10 @@ void DesfirePN532::dump_config() {
 
 void DesfirePN532::add_on_authenticated_callback(std::function<void(std::string)> &&callback) {
   this->on_authenticated_callbacks_.push_back(std::move(callback));
+}
+
+void DesfirePN532::add_on_auth_failed_callback(std::function<void(std::string)> &&callback) {
+  this->on_auth_failed_callbacks_.push_back(std::move(callback));
 }
 
 bool DesfirePN532::is_ready() {

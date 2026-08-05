@@ -26,11 +26,13 @@ class DesfirePN532 : public Component,
   void set_irq_pin(InternalGPIOPin *pin) { this->irq_pin_ = pin; }
   void set_nasc_key(const std::string &key) { this->nasc_key_ = key; }
   void add_on_authenticated_callback(std::function<void(std::string)> &&callback);
+  void add_on_auth_failed_callback(std::function<void(std::string)> &&callback);
 
  protected:
   InternalGPIOPin *irq_pin_{nullptr};
   std::string nasc_key_;
   std::vector<std::function<void(std::string)>> on_authenticated_callbacks_;
+  std::vector<std::function<void(std::string)>> on_auth_failed_callbacks_;
 
   // PN532 constants
   static const uint8_t PN532_COMMAND_INLISTPASSIVETARGET = 0x4A;
@@ -55,12 +57,18 @@ class DesfirePN532 : public Component,
 
   uint32_t last_check_ = 0;
   std::string current_uid_;
+  std::string last_uid_ = "";
+  uint32_t last_uid_time_ = 0;
 };
 
 class DesfireAuthenticatedTrigger : public Trigger<std::string> {
  public:
-  explicit DesfireAuthenticatedTrigger(DesfirePN532 *parent) {
-    parent->add_on_authenticated_callback([this](std::string user_id) { this->trigger(user_id); });
+  explicit DesfireAuthenticatedTrigger(DesfirePN532 *parent, bool is_success) {
+    if (is_success) {
+      parent->add_on_authenticated_callback([this](std::string user_id) { this->trigger(user_id); });
+    } else {
+      parent->add_on_auth_failed_callback([this](std::string user_id) { this->trigger(user_id); });
+    }
   }
 };
 

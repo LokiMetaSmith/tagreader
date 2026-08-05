@@ -43,11 +43,25 @@ desfire_pn532:
   nasc_key: !secret nasc_aes_key # Provide 32-character hex key in secrets.yaml
   on_authenticated:
     - logger.log: "DESFire AES Auth Succeeded!"
+    - if:
+        condition:
+          switch.is_on: buzzer_enabled
+        then:
+          - rtttl.play: "success:d=16,o=5,b=100:c,g,b"
     - mqtt.publish:
         topic: "tagreader/auth/success"
         payload: !lambda |-
           return "{\"user_id\":\"" + user_id + "\",\"reader_id\":\"front_door\",\"timestamp\":" + to_string(id(homeassistant_time).now().timestamp) + "}";
     - switch.turn_on: door_strike_relay
+  on_auth_failed:
+    - logger.log: "DESFire Auth Failed. Falling back to simple UID scan..."
+    - if:
+        condition:
+          switch.is_on: buzzer_enabled
+        then:
+          - rtttl.play: "beep:d=8,o=5,b=100:b"
+    - homeassistant.tag_scanned: !lambda |-
+        return user_id;
 
 # MQTT setup (required for external cluster orchestration)
 mqtt:
@@ -84,6 +98,20 @@ logger:
 
 # Enable Home Assistant API
 api:
+  services:
+  - service: rfidreader_tag_ok
+    then:
+    - rtttl.play: "beep:d=16,o=5,b=100:b"
+
+  - service: rfidreader_tag_ko
+    then:
+    - rtttl.play: "beep:d=8,o=5,b=100:b"
+
+  - service: play_rtttl
+    variables:
+      song_str: string
+    then:
+    - rtttl.play: !lambda 'return song_str;'
 
 # Time required for timestamps in MQTT payload
 time:

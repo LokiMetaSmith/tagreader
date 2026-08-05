@@ -16,6 +16,7 @@ DesfireAuthenticatedTrigger = desfire_pn532_ns.class_(
 CONF_NASC_KEY = "nasc_key"
 CONF_IRQ_PIN = "irq_pin"
 CONF_ON_AUTHENTICATED = "on_authenticated"
+CONF_ON_AUTH_FAILED = "on_auth_failed"
 
 # Validation schema for the component configuration
 CONFIG_SCHEMA = (
@@ -29,6 +30,13 @@ CONFIG_SCHEMA = (
                 {
                     cv.GenerateID(CONF_TRIGGER_ID): cv.declare_id(
                         DesfireAuthenticatedTrigger
+                    ),
+                }
+            ),
+            cv.Optional(CONF_ON_AUTH_FAILED): automation.validate_automation(
+                {
+                    cv.GenerateID(CONF_TRIGGER_ID): cv.declare_id(
+                        DesfireAuthenticatedTrigger # Reusing the trigger template since it just passes a string
                     ),
                 }
             ),
@@ -48,5 +56,9 @@ async def to_code(config):
     cg.add(var.set_nasc_key(config[CONF_NASC_KEY]))
 
     for conf in config.get(CONF_ON_AUTHENTICATED, []):
-        trigger = cg.new_Pvariable(conf[CONF_TRIGGER_ID], var)
+        trigger = cg.new_Pvariable(conf[CONF_TRIGGER_ID], var, True)
+        await automation.build_automation(trigger, [(cg.std_string, "user_id")], conf)
+
+    for conf in config.get(CONF_ON_AUTH_FAILED, []):
+        trigger = cg.new_Pvariable(conf[CONF_TRIGGER_ID], var, False)
         await automation.build_automation(trigger, [(cg.std_string, "user_id")], conf)
