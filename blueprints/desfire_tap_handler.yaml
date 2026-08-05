@@ -22,7 +22,7 @@ blueprint:
     welcome_scene:
       name: Welcome Scene (Optional)
       description: A scene to trigger when this user taps in
-      default: []
+      default: none
       selector:
         entity:
           domain: scene
