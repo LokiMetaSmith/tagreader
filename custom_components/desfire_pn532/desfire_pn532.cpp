@@ -296,9 +296,8 @@ bool DesfirePN532::authenticate_desfire() {
     std::copy(rnd_a, rnd_a + 16, payload);
     std::copy(rnd_b_prime, rnd_b_prime + 16, payload + 16);
 
-    // Encrypt payload (using CBC mode with IV = enc_rnd_b, but since mbedtls provides ECB, we must manually do CBC or use mbedtls CBC)
-    // Note: DESFire uses AES in CBC send/receive mode. For a full implementation, we should use CBC.
-    // For this demonstration, we'll use a simplified implementation structure.
+    // Encrypt payload using CBC mode
+    // The IV for this block is the ciphertext from the previous step (enc_rnd_b)
 
     mbedtls_aes_context ctx;
     mbedtls_aes_init(&ctx);
